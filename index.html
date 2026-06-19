@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>REFITT Light Curve Trial</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        body {
+            background-color: #1a1a2e;
+            color: #ffffff;
+            font-family: 'Inter', -apple-system, sans-serif;
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 { font-weight: 300; letter-spacing: 1px; margin-bottom: 1.5rem; }
+        .controls { margin-bottom: 1.5rem; }
+        .controls label { margin-right: 8px; font-size: 14px; color: #aaa; }
+        .controls select {
+            padding: 8px 12px; font-size: 15px; border-radius: 6px;
+            border: 1px solid #2a3b5c; background: #16213e; color: white; cursor: pointer;
+        }
+        #chart-container {
+            width: 100%; max-width: 1100px; height: 600px;
+            background: #16213e; border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            padding: 20px; box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>REFITT Light Curve Viewer</h1>
+
+    <div class="controls">
+        <label for="fileSelector">Select Object:</label>
+        <select id="fileSelector" onchange="loadLightCurve(this.value)">
+            <option>Loading objects...</option>
+        </select>
+    </div>
+
+    <div id="chart-container"></div>
+
+    <script>
+        const chartDom = document.getElementById('chart-container');
+        const myChart  = echarts.init(chartDom, 'dark', { renderer: 'canvas' });
+
+        const COLOR_G = '#2ecc71';
+        const COLOR_R = '#e74c3c';
+
+        // ── Helpers ──────────────────────────────────────────────────────────────
+
+        /**
+         * Strips pre-explosion MCMC artifacts (mag > limit) from a model-fit band.
+         * Filters all four arrays (mjd, median, upper_16th, lower_84th) in sync by index.
+         */
+        function sanitizeBand(band, limit = 24.0) {
+            const keep = band.median
+                .map((mag, i) => ({ i, mag }))
+                .filter(({ mag }) => mag <= limit);
+            return {
+                mjd:        keep.map(({ i }) => band.mjd[i]),
+                median:     keep.map(({ i }) => band.median[i]),
+                upper_16th: keep.map(({ i }) => band.upper_16th[i]),
+                lower_84th: keep.map(({ i }) => band.lower_84th[i])
+            };
+        }
+
+        /**
+         * Linearly interpolates a value from a sorted (mjd, values) pair at targetMjd.
+         * Returns null if targetMjd is outside the array's range.
+         */
+        function interpolate(mjdArr, valArr, targetMjd) {
+            if (!mjdArr || mjdArr.length === 0) return null;
+            if (targetMjd < mjdArr[0] || targetMjd > mjdArr[mjdArr.length - 1]) return null;
+            let lo = 0;
+            for (let i = 0; i < mjdArr.length - 1; i++) {
+                if (mjdArr[i] <= targetMjd && mjdArr[i + 1] >= targetMjd) { lo = i; break; }
+            }
+            const hi = lo + 1;
+            if (hi >= mjdArr.length) return valArr[lo];
+            const t = (targetMjd - mjdArr[lo]) / (mjdArr[hi] - mjdArr[lo]);
+            return valArr[lo] + t * (valArr[hi] - valArr[lo]);
+        }
+
+        /**
+         * Builds the ECharts series for one photometric band's 1σ error envelope + median line.
+         * Uses a 'custom' series to explicitly draw the bounding polygons, bypassing 
+         * ECharts' internal stacking bugs on inverted value axes.
+         */
+        /**
+         * Builds scatter + error-bar series for raw forced photometry observations.
+         *
+         * Each observation has { mjd, mag, magerr, filter }. We render:
+         *   - A scatter series for the central mag point
+         *   - A custom series that draws a vertical error bar (line + end ticks)
+         *     spanning [mag − magerr, mag + magerr] in data space.
+         *
+         * Data format for the custom series: [mjd, mag, magerr] — the third element
+         * lets renderItem read the error via api.value(2) without a separate lookup.
+         */
+        function buildObsSeries(filterLabel, obs, color) {
+            const filtered = obs.filter(o => o.filter === filterLabel);
+            if (filtered.length === 0) return [];
+
+            return [
+                // ── Scatter dots ───────────────────────────────────────────────────────
+                {
+                    name: `${filterLabel}-band obs`,
+                    type: 'scatter',
+                    symbolSize: 9,
+                    itemStyle: { color, borderColor: '#000', borderWidth: 1.2 },
+                    data: filtered.map(o => [o.mjd, o.mag]),
+                    z: 10
+                },
+                // ── Error bars (vertical line + end ticks) ─────────────────────────────
+                {
+                    name: `${filterLabel}-band obs err`,
+                    type: 'custom',
+                    clip: true,
+                    renderItem(params, api) {
+                        const mjd    = api.value(0);
+                        const mag    = api.value(1);
+                        const magerr = api.value(2);
+
+                        const centre = api.coord([mjd, mag]);
+                        const top    = api.coord([mjd, mag - magerr]); // brighter (lower number)
+                        const bot    = api.coord([mjd, mag + magerr]); // dimmer  (higher number)
+                        const TICK   = 4;  // half-width of the end-cap tick in pixels
+
+                        return {
+                            type: 'group',
+                            children: [
+                                // Vertical stem
+                                {
+                                    type: 'line',
+                                    shape: { x1: centre[0], y1: top[1], x2: centre[0], y2: bot[1] },
+                                    style: { stroke: color, lineWidth: 1.5, opacity: 0.85 }
+                                },
+                                // Top tick (bright end)
+                                {
+                                    type: 'line',
+                                    shape: { x1: centre[0] - TICK, y1: top[1], x2: centre[0] + TICK, y2: top[1] },
+                                    style: { stroke: color, lineWidth: 1.5, opacity: 0.85 }
+                                },
+                                // Bottom tick (faint end)
+                                {
+                                    type: 'line',
+                                    shape: { x1: centre[0] - TICK, y1: bot[1], x2: centre[0] + TICK, y2: bot[1] },
+                                    style: { stroke: color, lineWidth: 1.5, opacity: 0.85 }
+                                }
+                            ]
+                        };
+                    },
+                    // [mjd, mag, magerr] — third value drives the error bar extent
+                    data: filtered.map(o => [o.mjd, o.mag, o.magerr]),
+                    tooltip: { show: false },
+                    legendHoverLink: false,
+                    z: 9
+                }
+            ];
+        }
+
+        function buildBandSeries(label, bandData, color) {
+            // Translucent fills — green for g-band, red for r-band
+            const fillColor = color === COLOR_G
+                ? 'rgba(46, 204, 113, 0.25)'   
+                : 'rgba(231, 76, 60, 0.25)';  
+
+            return [
+                // ── 1σ Error Envelope (Custom Polygon Array) ─────────────────────────
+                {
+                    name: `${label}-band 1σ`,
+                    type: 'custom',
+                    clip: true, // Prevents shading from bleeding over axes when zoomed
+                    renderItem: function (params, api) {
+                        const i = params.dataIndex;
+                        if (i === 0) return; // We need a previous point to form a segment
+
+                        // api.coord() maps our exact [MJD, Magnitude] to literal screen pixels
+                        // Top edge connects the brighter bounds
+                        const p1 = api.coord([bandData.mjd[i - 1], bandData.upper_16th[i - 1]]);
+                        const p2 = api.coord([bandData.mjd[i],     bandData.upper_16th[i]]);
+                        // Bottom edge connects the dimmer bounds
+                        const p3 = api.coord([bandData.mjd[i],     bandData.lower_84th[i]]);
+                        const p4 = api.coord([bandData.mjd[i - 1], bandData.lower_84th[i - 1]]);
+
+                        return {
+                            type: 'polygon',
+                            shape: { points: [p1, p2, p3, p4] },
+                            style: api.style({ fill: fillColor, stroke: 'none' })
+                        };
+                    },
+                    // The data array just drives the loop and handles dataZoom slicing
+                    data: bandData.mjd.map((mjd, i) => [mjd, bandData.median[i]]),
+                    tooltip: { show: false }, // Kept clean (handled by your custom formatter)
+                    z: 2
+                },
+                // ── Median Fit Line ──────────────────────────────────────────────────
+                {
+                    name: `${label}-band median`,
+                    type: 'line',
+                    smooth: true,
+                    symbol: 'none',
+                    lineStyle: { color, width: 2.5 },
+                    data: bandData.mjd.map((mjd, i) => [mjd, bandData.median[i]]),
+                    z: 5
+                }
+            ];
+        }
+
+        // ── Main render function ─────────────────────────────────────────────────
+
+        /**
+         * Fetches any *_lc.json by filename and renders the full light curve.
+         * This is the reusable component — pass any OID filename to re-render.
+         */
+        function loadLightCurve(filename) {
+            myChart.showLoading({
+                text: 'Loading...', color: COLOR_G,
+                textColor: '#fff', maskColor: 'rgba(22,33,62,0.85)'
+            });
+
+            fetch(filename)
+                .then(res => {
+                    if (!res.ok) throw new Error(`HTTP ${res.status}: ${filename}`);
+                    return res.json();
+                })
+                .then(data => {
+                    myChart.hideLoading();
+                    myChart.clear();
+
+                    const obs    = data.observations || [];
+                    const series = [];
+
+                    // Sanitize each band and store references for the tooltip interpolator
+                    const gb = data.model_fit?.g_band ? sanitizeBand(data.model_fit.g_band) : null;
+                    const rb = data.model_fit?.r_band ? sanitizeBand(data.model_fit.r_band) : null;
+
+                    // ── G-BAND ──
+                    if (gb) series.push(...buildBandSeries('g', gb, COLOR_G));
+                    series.push(...buildObsSeries('g', obs, COLOR_G));
+
+                    // ── R-BAND ──
+                    if (rb) series.push(...buildBandSeries('r', rb, COLOR_R));
+                    series.push(...buildObsSeries('r', obs, COLOR_R));
+
+                    // ── Compute axis bounds from sanitized data ──────────────────────────
+
+                    // ── Axis bounds: must encompass model fit AND raw observations ───────
+                    const MAG_PAD = 0.4; // mag breathing room on each edge
+
+                    // X extent: union of all model MJDs + observation MJDs
+                    const allMjd = [
+                        ...(gb?.mjd || []),
+                        ...(rb?.mjd || []),
+                        ...obs.map(o => o.mjd)
+                    ];
+                    const xMin = Math.min(...allMjd) - 2;
+                    const xMax = Math.max(...allMjd) + 2;
+
+                    // Y extent: union of model bounds + observation mag ± magerr
+                    // (so error bars are never clipped by the axis)
+                    const allUpper = [
+                        ...(gb?.upper_16th || []),
+                        ...(rb?.upper_16th || []),
+                        ...obs.map(o => o.mag - o.magerr)  // bright edge of error bar
+                    ];
+                    const allLower = [
+                        ...(gb?.lower_84th || []),
+                        ...(rb?.lower_84th || []),
+                        ...obs.map(o => o.mag + o.magerr)  // faint edge of error bar
+                    ];
+                    // smallest mag number = brightest = top of inverted axis
+                    const yAxisMin = Math.min(...allUpper) - MAG_PAD;
+                    // largest mag number = dimmest = bottom of inverted axis
+                    const yAxisMax = Math.max(...allLower) + MAG_PAD;
+
+                    // ── ECharts option ───────────────────────────────────────────────────
+
+                    myChart.setOption({
+                        backgroundColor: 'transparent',
+                        title: {
+                            text: `Object ID: ${data.object_id ?? filename}`,
+                            left: 'center',
+                            textStyle: { color: '#ddd', fontWeight: 'normal', fontSize: 15 }
+                        },
+
+                        // Custom tooltip: uses linear interpolation on BOTH band arrays so
+                        // g and r values always appear together regardless of MJD grid alignment.
+                        tooltip: {
+                            trigger: 'axis',
+                            axisPointer: { type: 'line' },
+                            formatter(params) {
+                                // axisValue is the hovered MJD (string from ECharts)
+                                const mjd = parseFloat(params[0]?.axisValue);
+                                if (isNaN(mjd)) return '';
+
+                                let html = `<div style="font-weight:bold;margin-bottom:6px;font-size:13px;">
+                                    MJD: ${mjd.toFixed(2)}
+                                </div>`;
+
+                                // ── Interpolated model fit values (always shown) ──
+                                if (gb) {
+                                    const med = interpolate(gb.mjd, gb.median, mjd);
+                                    const u   = interpolate(gb.mjd, gb.upper_16th, mjd);
+                                    const l   = interpolate(gb.mjd, gb.lower_84th, mjd);
+                                    if (med != null) {
+                                        const err = l != null && u != null
+                                            ? ` <span style="color:#aaa;font-size:11px;">±${((l-u)/2).toFixed(3)}</span>`
+                                            : '';
+                                        html += `<div style="line-height:1.9">
+                                            <span style="display:inline-block;border-radius:50%;width:9px;height:9px;
+                                                         background:${COLOR_G};margin-right:5px;"></span>
+                                            g-band median: <b>${med.toFixed(3)}</b>${err}
+                                        </div>`;
+                                    }
+                                }
+                                if (rb) {
+                                    const med = interpolate(rb.mjd, rb.median, mjd);
+                                    const u   = interpolate(rb.mjd, rb.upper_16th, mjd);
+                                    const l   = interpolate(rb.mjd, rb.lower_84th, mjd);
+                                    if (med != null) {
+                                        const err = l != null && u != null
+                                            ? ` <span style="color:#aaa;font-size:11px;">±${((l-u)/2).toFixed(3)}</span>`
+                                            : '';
+                                        html += `<div style="line-height:1.9">
+                                            <span style="display:inline-block;border-radius:50%;width:9px;height:9px;
+                                                         background:${COLOR_R};margin-right:5px;"></span>
+                                            r-band median: <b>${med.toFixed(3)}</b>${err}
+                                        </div>`;
+                                    }
+                                }
+
+                                // ── Nearby raw observations (within ±2 days of cursor) ──
+                                const nearby = obs.filter(o => Math.abs(o.mjd - mjd) < 2);
+                                nearby.forEach(o => {
+                                    const bandColor = o.filter === 'g' ? COLOR_G : COLOR_R;
+                                    html += `<div style="line-height:1.9;margin-top:3px;border-top:1px solid #2a3b5c;padding-top:3px;">
+                                        <span style="display:inline-block;border-radius:50%;width:7px;height:7px;
+                                                     background:${bandColor};margin-right:5px;"></span>
+                                        <span style="color:#ccc;font-size:11px;">${o.filter}-band obs:</span>
+                                        <b>${o.mag.toFixed(3)}</b>
+                                        <span style="color:#aaa;font-size:11px;">±${o.magerr.toFixed(3)}</span>
+                                    </div>`;
+                                });
+
+                                return html;
+                            }
+                        },
+
+                        legend: {
+                            data: ['g-band median', 'g-band obs', 'g-band 1σ',
+                                   'r-band median', 'r-band obs', 'r-band 1σ'],
+                            bottom: 8,
+                            textStyle: { color: '#bbb', fontSize: 12 }
+                        },
+                        grid: {
+                            left: '5%', right: '4%',
+                            bottom: '14%', top: '9%',
+                            containLabel: true
+                        },
+                        dataZoom: [
+                            {
+                                type: 'slider',
+                                bottom: 30, height: 20,
+                                textStyle: { color: '#aaa' },
+                                startValue: xMin,
+                                endValue:   xMax
+                            },
+                            { type: 'inside' }
+                        ],
+                        xAxis: {
+                            type: 'value',
+                            name: 'MJD',
+                            nameLocation: 'middle',
+                            nameGap: 28,
+                            min: xMin,
+                            max: xMax,
+                            splitLine: { show: false },
+                            axisLabel: { formatter: v => v.toFixed(0) }
+                        },
+                        yAxis: {
+                            type: 'value',
+                            name: 'Absolute Magnitude',
+                            nameLocation: 'middle',
+                            nameGap: 45,
+                            inverse: true,  // lower mag = brighter = top of chart
+                            min: yAxisMin,  // brightest bound (numerically smallest) + padding
+                            max: yAxisMax,  // dimmest bound (numerically largest) + padding
+                            splitLine: { lineStyle: { color: '#243050', type: 'dashed' } }
+                        },
+                        series
+                    }, /* notMerge */ true);
+                })
+                .catch(err => {
+                    myChart.hideLoading();
+                    console.error('Failed to load light curve:', err);
+                });
+        }
+
+        window.addEventListener('resize', () => myChart.resize());
+
+        /**
+         * Populates the dropdown by loading the summary_index.json catalog.
+         * This ensures the dropdown dynamically matches the dataset without manual updates
+         * and avoids issues with directory listing interception.
+         */
+        async function populateDropdown() {
+            try {
+                const res = await fetch('summary_index.json');
+                const data = await res.json();
+                
+                const select = document.getElementById('fileSelector');
+                select.innerHTML = ''; // clear loading text
+
+                if (!data || data.length === 0) {
+                    select.innerHTML = '<option>No light curves found</option>';
+                    return;
+                }
+
+                data.forEach(item => {
+                    const opt = document.createElement('option');
+                    // The actual JSON filename is the object_id + '_lc.json'
+                    opt.value = item.object_id + '_lc.json';
+                    opt.textContent = item.object_id;
+                    select.appendChild(opt);
+                });
+
+                // Trigger initial load for the first file in the list
+                loadLightCurve(select.value);
+
+            } catch (err) {
+                console.error("Failed to fetch summary index:", err);
+                const select = document.getElementById('fileSelector');
+                select.innerHTML = '<option>Error loading list</option>';
+            }
+        }
+
+        // Initialize
+        populateDropdown();
+    </script>
+</body>
+</html>
