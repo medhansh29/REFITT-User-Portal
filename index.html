@@ -412,11 +412,17 @@
         async function populateDropdown() {
             try {
                 const res = await fetch('data/summary_index.json');
-                const data = await res.json();
                 
                 const select = document.getElementById('fileSelector');
                 select.innerHTML = ''; // clear loading text
 
+                if (!res.ok) {
+                    select.innerHTML = '<option>Waiting for data generation...</option>';
+                    return;
+                }
+
+                const data = await res.json();
+                
                 if (!data || data.length === 0) {
                     select.innerHTML = '<option>No light curves found</option>';
                     return;
