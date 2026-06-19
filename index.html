@@ -411,7 +411,7 @@
          */
         async function populateDropdown() {
             try {
-                const res = await fetch('summary_index.json');
+                const res = await fetch('data/summary_index.json');
                 const data = await res.json();
                 
                 const select = document.getElementById('fileSelector');
@@ -424,8 +424,8 @@
 
                 data.forEach(item => {
                     const opt = document.createElement('option');
-                    // The actual JSON filename is the object_id + '_lc.json'
-                    opt.value = item.object_id + '_lc.json';
+                    // The actual JSON filename is in the data folder
+                    opt.value = 'data/' + item.object_id + '_lc.json';
                     opt.textContent = item.object_id;
                     select.appendChild(opt);
                 });
