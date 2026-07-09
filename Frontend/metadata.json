@@ -1,0 +1,6 @@
+{
+  "name": "REFITT-Lite",
+  "description": "An interactive scientific dashboard for browsing, filtering, and studying anomalous supernovae with high-precision light curve fits rendered via Apache ECharts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
