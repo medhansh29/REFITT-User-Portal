@@ -25,6 +25,11 @@ const PALETTES = [
   { g: "#20bf6b", r: "#fd9644", name: "Turquoise & Peach" }
 ];
 
+function dateToMJD(dateString: string): number {
+  const date = new Date(dateString);
+  return (date.getTime() / 86400000) + 40587;
+}
+
 // Sanitizer helper
 function sanitizeBand(band: BandData, limit = 24.0): BandData {
   if (!band || !band.median) {
@@ -195,6 +200,8 @@ export default function LightCurveCompare({
       const gBand = lc.model_fit?.g_band ? sanitizeBand(lc.model_fit.g_band) : null;
       const rBand = lc.model_fit?.r_band ? sanitizeBand(lc.model_fit.r_band) : null;
       const obs = lc.observations || [];
+      const discoveryDate = metaMap[id]?.basic_info?.discovery_date;
+      const discoveryMjd = discoveryDate ? dateToMJD(discoveryDate) : undefined;
 
       // Helper to adjust X values
       const adjustX = (v: number) => (alignMode === "rest_frame" ? v - tExpShift : v);
@@ -324,8 +331,16 @@ export default function LightCurveCompare({
             xAxisIndex: 0,
             yAxisIndex: 0,
             symbolSize: 7,
-            itemStyle: { color: palette.g, borderColor: "#000", borderWidth: 0.8 },
-            data: obsG.map((o) => [adjustX(o.mjd), o.mag]),
+            data: obsG.map((o) => {
+              const isAfter = discoveryMjd != null && o.mjd > discoveryMjd;
+              const isLimit = o.is_upperlimit === true;
+              return {
+                value: [adjustX(o.mjd), o.mag],
+                symbol: isLimit ? "triangle" : "circle",
+                symbolSize: isLimit ? 6 : 7,
+                itemStyle: { color: palette.g, borderColor: "#000", borderWidth: 0.8, opacity: isLimit ? 0.4 : (isAfter ? 0.25 : 1) }
+              };
+            }),
             z: 10,
           });
         }
@@ -338,8 +353,16 @@ export default function LightCurveCompare({
             xAxisIndex: 1,
             yAxisIndex: 1,
             symbolSize: 7,
-            itemStyle: { color: palette.r, borderColor: "#000", borderWidth: 0.8 },
-            data: obsR.map((o) => [adjustX(o.mjd), o.mag]),
+            data: obsR.map((o) => {
+              const isAfter = discoveryMjd != null && o.mjd > discoveryMjd;
+              const isLimit = o.is_upperlimit === true;
+              return {
+                value: [adjustX(o.mjd), o.mag],
+                symbol: isLimit ? "triangle" : "circle",
+                symbolSize: isLimit ? 6 : 7,
+                itemStyle: { color: palette.r, borderColor: "#000", borderWidth: 0.8, opacity: isLimit ? 0.4 : (isAfter ? 0.25 : 1) }
+              };
+            }),
             z: 10,
           });
         }
@@ -595,6 +618,8 @@ export default function LightCurveCompare({
       const gBand = lc.model_fit?.g_band ? sanitizeBand(lc.model_fit.g_band) : null;
       const rBand = lc.model_fit?.r_band ? sanitizeBand(lc.model_fit.r_band) : null;
       const obs = lc.observations || [];
+      const discoveryDate = metaMap[id]?.basic_info?.discovery_date;
+      const discoveryMjd = discoveryDate ? dateToMJD(discoveryDate) : undefined;
 
       // T0 = first model MJD for grid mode alignment
       let gridT0 = 0;
@@ -722,8 +747,16 @@ export default function LightCurveCompare({
             name: titleObsG,
             type: "scatter",
             symbolSize: 6,
-            itemStyle: { color: palette.g, borderColor: "#000", borderWidth: 0.5 },
-            data: obsG.map((o) => [adjustX(o.mjd), o.mag]),
+            data: obsG.map((o) => {
+              const isAfter = discoveryMjd != null && o.mjd > discoveryMjd;
+              const isLimit = o.is_upperlimit === true;
+              return {
+                value: [adjustX(o.mjd), o.mag],
+                symbol: isLimit ? "triangle" : "circle",
+                symbolSize: isLimit ? 5 : 6,
+                itemStyle: { color: palette.g, borderColor: "#000", borderWidth: 0.5, opacity: isLimit ? 0.4 : (isAfter ? 0.25 : 1) }
+              };
+            }),
             z: 10,
           });
         }
@@ -734,8 +767,16 @@ export default function LightCurveCompare({
             name: titleObsR,
             type: "scatter",
             symbolSize: 6,
-            itemStyle: { color: palette.r, borderColor: "#000", borderWidth: 0.5 },
-            data: obsR.map((o) => [adjustX(o.mjd), o.mag]),
+            data: obsR.map((o) => {
+              const isAfter = discoveryMjd != null && o.mjd > discoveryMjd;
+              const isLimit = o.is_upperlimit === true;
+              return {
+                value: [adjustX(o.mjd), o.mag],
+                symbol: isLimit ? "triangle" : "circle",
+                symbolSize: isLimit ? 5 : 6,
+                itemStyle: { color: palette.r, borderColor: "#000", borderWidth: 0.5, opacity: isLimit ? 0.4 : (isAfter ? 0.25 : 1) }
+              };
+            }),
             z: 10,
           });
         }

@@ -23,7 +23,8 @@ import SupernovaCard from "./components/SupernovaCard";
 import LightCurveChart from "./components/LightCurveChart";
 import LightCurveCompare from "./components/LightCurveCompare";
 import ParameterHistoryChart from "./components/ParameterHistoryChart";
-
+import AladinViewer from "./components/AladinViewer";
+import { getZScoreColor } from "./utils";
 const INITIAL_FILTERS = {
   sortBy: "id" as "id" | "redshift" | "k_energy" | "plateau_duration" | "luminosity",
   sortDirection: "asc" as "asc" | "desc",
@@ -106,7 +107,9 @@ export default function App() {
 
   // Filter drawer state
   const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(false);
-  
+
+  // Sky map modal state
+  const [skyMapTarget, setSkyMapTarget] = useState<{ objectId: string; ra?: number; dec?: number } | null>(null);
 
 
   // Measure the sidebar height to dynamically balance/match panels
@@ -333,10 +336,10 @@ export default function App() {
         // Intersection logic only
         return matchResults.every((val) => val === true);
       }
-
       return true;
     });
 
+    // 8. Apply active sorting
     results.sort((a, b) => {
       let valA: any;
       let valB: any;
@@ -392,7 +395,25 @@ export default function App() {
     });
 
     return results;
-  }, [supernovae, filters, activeAnomalyKeys]);
+  }, [supernovae, filters]);
+
+  const maxAbsZScore = useMemo(() => {
+    let max = 0;
+    filteredSupernovae.forEach(s => {
+      const p = s.inferred_parameters;
+      const zscores = [
+        p.zams_zscore, p.k_energy_zscore, p.mloss_rate_zscore,
+        p.beta_zscore, p.ni56_zscore, p.t_exp_zscore,
+        p.A_v_zscore, p.logZ_zscore
+      ];
+      zscores.forEach(z => {
+        if (z !== undefined && z !== null) {
+          if (Math.abs(z) > max) max = Math.abs(z);
+        }
+      });
+    });
+    return max > 0 ? max : 2;
+  }, [filteredSupernovae]);
 
   // Detailed parameter dictionary of the active chosen supernova
   const selectedSupernova = useMemo(() => {
@@ -576,8 +597,13 @@ export default function App() {
                       setIsModalOpen(true);
                     }}
                     isCompared={comparedIds.includes(item.object_id)}
+                    maxAbsZScore={maxAbsZScore}
                     onToggleCompare={() => handleToggleCompare(item.object_id)}
                     onShowHistory={(objId, paramK, paramL) => setHistoryPopup({ objectId: objId, paramKey: paramK, paramLabel: paramL })}
+                    onShowSkyMap={(objId) => {
+                      const sn = supernovae.find(s => s.object_id === objId);
+                      if (sn) setSkyMapTarget({ objectId: objId, ra: sn.basic_info.ra, dec: sn.basic_info.dec });
+                    }}
                   />
                 ))}
               </div>
@@ -619,12 +645,31 @@ export default function App() {
                     <History className="w-4.5 h-4.5" />
                   )}
                 </div>
-                <div>
-                  <h3 className="text-sm font-bold font-display uppercase tracking-widest text-[#e5e7eb] leading-tight">
-                    {modalMode === "single"
-                      ? `Single Target Analysis Workspace: ${selectedId}`
-                      : `Multi-Target Comparative Workbench`}
-                  </h3>
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center">
+                    <h3 className="text-sm font-bold font-display uppercase tracking-widest text-[#e5e7eb] leading-tight">
+                      {modalMode === "single"
+                        ? `Single Target Analysis Workspace: ${selectedId}`
+                        : `Multi-Target Comparative Workbench`}
+                    </h3>
+                    {/* Sky Map button for Single Target View */}
+                    {modalMode === "single" && selectedSupernova?.basic_info.ra != null && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSkyMapTarget({
+                            objectId: selectedId,
+                            ra: selectedSupernova.basic_info.ra,
+                            dec: selectedSupernova.basic_info.dec
+                          });
+                        }}
+                        className="ml-2 p-1.5 rounded-md bg-white/5 hover:bg-amber-500/15 border border-white/10 hover:border-amber-500/30 text-slate-400 hover:text-amber-400 transition-all cursor-pointer"
+                        title="View sky location"
+                      >
+                        <Globe className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                   <p className="text-[10px] text-slate-400 font-medium">
                     {modalMode === "single"
                       ? "Interactive light curve telemetry & best-fit models"
@@ -721,6 +766,7 @@ export default function App() {
                       data={selectedLc}
                       loading={lcLoading}
                       objectId={selectedId}
+                      discoveryDate={selectedSupernova?.basic_info.discovery_date}
                     />
                     {/* Error notifications */}
                     {lcError && (
@@ -762,25 +808,24 @@ export default function App() {
                             if (allMags.length > 0) peakLum = Math.min(...allMags);
                           }
                           const items = [
-                            { key: "discovery", label: "Discovery", val: selectedSupernova.basic_info.discovery_date, pct_plus: null, pct_minus: null, unit: "", digits: 0, isString: true },
-                            { key: "redshift", label: "Redshift (z)", val: selectedSupernova.basic_info.redshift, pct_plus: null, pct_minus: null, unit: "", digits: 4 },
-                            { key: "plateau_dur", label: "Plat. Dur (d)", val: selectedSupernova.basic_info.plateau_duration_days, pct_plus: null, pct_minus: null, unit: "d", digits: 1 },
-                            { key: "peak_lum", label: "Peak Lum (mag)", val: peakLum, pct_plus: null, pct_minus: null, unit: "mag", digits: 2 },
-                            { key: "observations", label: "Observations", val: selectedSupernova.lightcurve?.observations ? selectedSupernova.lightcurve.observations.length : 0, pct_plus: null, pct_minus: null, unit: "", digits: 0 },
-                            { key: "k_energy", label: "E_k (foe)", val: p.k_energy, pct_plus: p.k_energy_pct_plus, pct_minus: p.k_energy_pct_minus, unit: "foe", digits: 2 },
-                            { key: "ni56", label: "M_Ni (M☉)", val: p.ni56, pct_plus: p.ni56_pct_plus, pct_minus: p.ni56_pct_minus, unit: "M☉", digits: 3 },
-                            { key: "zams", label: "Prog Mass (M☉)", val: p.zams, pct_plus: p.zams_pct_plus, pct_minus: p.zams_pct_minus, unit: "M☉", digits: 1 },
-                            { key: "mloss_rate", label: "M_loss (idx)", val: p.mloss_rate, pct_plus: p.mloss_rate_pct_plus, pct_minus: p.mloss_rate_pct_minus, unit: "idx", digits: 2 },
-                            { key: "beta", label: "Beta", val: p.beta, pct_plus: p.beta_pct_plus, pct_minus: p.beta_pct_minus, unit: "val", digits: 2 },
-                            { key: "t_exp", label: "t_exp (days)", val: p.t_exp, pct_plus: p.t_exp_pct_plus, pct_minus: p.t_exp_pct_minus, unit: "days", digits: 2 },
-                            { key: "A_v", label: "A_v (mag)", val: p.A_v, pct_plus: p.A_v_pct_plus, pct_minus: p.A_v_pct_minus, unit: "mag", digits: 2 },
-                            { key: "logZ", label: "logZ (dex)", val: p.logZ, pct_plus: p.logZ_pct_plus, pct_minus: p.logZ_pct_minus, unit: "dex", digits: 2 },
-                            { key: "reduced_chi2", label: "red_chi2", val: p.reduced_chi2, pct_plus: null, pct_minus: null, unit: "val", digits: 2 },
+                            { key: "discovery", label: "Discovery", val: selectedSupernova.basic_info.discovery_date, zscore: null, pct_plus: null, pct_minus: null, unit: "", digits: 0, isString: true },
+                            { key: "redshift", label: "Redshift (z)", val: selectedSupernova.basic_info.redshift, zscore: null, pct_plus: null, pct_minus: null, unit: "", digits: 4 },
+                            { key: "plateau_dur", label: "Plat. Dur (d)", val: selectedSupernova.basic_info.plateau_duration_days, zscore: null, pct_plus: null, pct_minus: null, unit: "d", digits: 1 },
+                            { key: "peak_lum", label: "Peak Lum (mag)", val: peakLum, zscore: null, pct_plus: null, pct_minus: null, unit: "mag", digits: 2 },
+                            { key: "observations", label: "Observations", val: selectedSupernova.lightcurve?.observations ? selectedSupernova.lightcurve.observations.length : 0, zscore: null, pct_plus: null, pct_minus: null, unit: "", digits: 0 },
+                            { key: "k_energy", label: "E_k (foe)", val: p.k_energy, zscore: p.k_energy_zscore, pct_plus: p.k_energy_pct_plus, pct_minus: p.k_energy_pct_minus, unit: "foe", digits: 2 },
+                            { key: "ni56", label: "M_Ni (M☉)", val: p.ni56, zscore: p.ni56_zscore, pct_plus: p.ni56_pct_plus, pct_minus: p.ni56_pct_minus, unit: "M☉", digits: 3 },
+                            { key: "zams", label: "Prog Mass (M☉)", val: p.zams, zscore: p.zams_zscore, pct_plus: p.zams_pct_plus, pct_minus: p.zams_pct_minus, unit: "M☉", digits: 1 },
+                            { key: "mloss_rate", label: "M_loss (idx)", val: p.mloss_rate, zscore: p.mloss_rate_zscore, pct_plus: p.mloss_rate_pct_plus, pct_minus: p.mloss_rate_pct_minus, unit: "idx", digits: 2 },
+                            { key: "beta", label: "Beta", val: p.beta, zscore: p.beta_zscore, pct_plus: p.beta_pct_plus, pct_minus: p.beta_pct_minus, unit: "val", digits: 2 },
+                            { key: "t_exp", label: "t_exp (days)", val: p.t_exp, zscore: p.t_exp_zscore, pct_plus: p.t_exp_pct_plus, pct_minus: p.t_exp_pct_minus, unit: "days", digits: 2 },
+                            { key: "A_v", label: "A_v (mag)", val: p.A_v, zscore: p.A_v_zscore, pct_plus: p.A_v_pct_plus, pct_minus: p.A_v_pct_minus, unit: "mag", digits: 2 },
+                            { key: "logZ", label: "logZ (dex)", val: p.logZ, zscore: p.logZ_zscore, pct_plus: p.logZ_pct_plus, pct_minus: p.logZ_pct_minus, unit: "dex", digits: 2 },
+                            { key: "reduced_chi2", label: "red_chi2", val: p.reduced_chi2, zscore: null, pct_plus: null, pct_minus: null, unit: "val", digits: 2 },
                           ];
 
                           return items.map((item) => {
-                            const hasHistory = selectedSupernova.parameter_history && selectedSupernova.parameter_history.length > 0;
-                            const isInteractive = !!(hasHistory && ["zams", "k_energy", "mloss_rate", "beta", "ni56", "t_exp", "A_v", "logZ"].includes(item.key));
+                            const isInteractive = ["zams", "k_energy", "mloss_rate", "beta", "ni56", "t_exp", "A_v", "logZ"].includes(item.key);
                             
                             const handleClick = () => {
                               if (isInteractive) {
@@ -802,7 +847,10 @@ export default function App() {
                                 title={isInteractive ? "Click to view convergence history" : undefined}
                               >
                                 <span className="text-[7.5px] text-slate-500 uppercase font-mono tracking-wider font-semibold truncate">{item.label}</span>
-                                <div className="text-slate-200 font-mono font-bold text-[10px] flex flex-wrap items-baseline gap-0.5 mt-0.5">
+                                <div 
+                                  className="font-mono font-bold text-[10px] flex flex-wrap items-baseline gap-0.5 mt-0.5"
+                                  style={{ color: getZScoreColor(item.zscore, maxAbsZScore) || "#e2e8f0" }}
+                                >
                                   {item.isString ? (
                                     <span className="truncate">{item.val}</span>
                                   ) : (
@@ -814,8 +862,8 @@ export default function App() {
                                 </div>
                                 {item.pct_plus !== null && item.pct_plus !== undefined && item.pct_minus !== null && item.pct_minus !== undefined ? (
                                   <div className="flex flex-col text-[8.5px] font-mono leading-[1.2] mt-1 shrink-0">
-                                    <span className="text-emerald-400">+{item.pct_plus.toFixed(1)}%</span>
-                                    <span className="text-rose-400">-{item.pct_minus.toFixed(1)}%</span>
+                                    <span className="text-white">+{item.pct_plus.toFixed(1)}%</span>
+                                    <span className="text-white">-{item.pct_minus.toFixed(1)}%</span>
                                   </div>
                                 ) : (
                                   <div className="h-[15px]"></div>
@@ -854,17 +902,63 @@ export default function App() {
       )}
       {historyPopup && (() => {
         const item = supernovae.find(s => s.object_id === historyPopup.objectId);
-        if (!item || !item.parameter_history) return null;
+        if (!item) return null;
         return (
           <ParameterHistoryChart
             objectId={historyPopup.objectId}
             paramKey={historyPopup.paramKey}
             paramLabel={historyPopup.paramLabel}
-            history={item.parameter_history}
+            history={item.parameter_history || []}
             onClose={() => setHistoryPopup(null)}
           />
         );
       })()}
+
+      {/* Sky Map Modal - Aladin Lite (Rendered once, toggled via CSS to prevent WebGL crashes) */}
+      <div 
+        className={`fixed inset-0 z-[60] flex items-center justify-center p-6 transition-all duration-300 ${
+          skyMapTarget ? 'opacity-100 visible' : 'opacity-0 invisible pointer-events-none'
+        }`}
+      >
+        <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setSkyMapTarget(null)} />
+        <div className="relative w-full max-w-3xl bg-[#08090c] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden z-10">
+          
+          {/* Header */}
+          <div className="flex justify-between items-center px-5 py-3 border-b border-white/10 bg-black/40">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-500 border border-amber-500/20">
+                <Globe className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold font-display uppercase tracking-widest text-[#e5e7eb] leading-tight">
+                  Sky Location: {skyMapTarget?.objectId || "None"}
+                </h3>
+                <p className="text-[10px] text-slate-400 font-mono">
+                  {skyMapTarget?.ra != null
+                    ? `RA ${skyMapTarget.ra.toFixed(5)}° · Dec ${skyMapTarget.dec!.toFixed(5)}° · Pan-STARRS DR1`
+                    : "Coordinates unavailable"}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setSkyMapTarget(null)}
+              className="text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 p-2 rounded-lg transition-all cursor-pointer border border-transparent hover:border-white/5"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Aladin Container */}
+          <div className="w-full h-[500px]">
+            <AladinViewer
+              ra={skyMapTarget?.ra}
+              dec={skyMapTarget?.dec}
+              name={skyMapTarget?.objectId || ""}
+            />
+          </div>
+          
+        </div>
+      </div>
 
       {/* Global CSS for scrollbars */}
       <style>{`

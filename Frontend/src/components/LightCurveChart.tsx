@@ -6,6 +6,7 @@ interface LightCurveChartProps {
   data: LightCurve | null;
   loading: boolean;
   objectId: string;
+  discoveryDate?: string;
 }
 
 const COLOR_G = "#2ecc71";
@@ -45,8 +46,13 @@ function interpolate(mjdArr: number[], valArr: number[], targetMjd: number): num
   return valArr[lo] + t * (valArr[hi] - valArr[lo]);
 }
 
+function dateToMJD(dateString: string): number {
+  const date = new Date(dateString);
+  return (date.getTime() / 86400000) + 40587;
+}
+
 // Helper: Builds scatter + error-bar series for raw forced photometry observations.
-function buildObsSeries(filterLabel: "g" | "r", obs: Observation[], color: string) {
+function buildObsSeries(filterLabel: "g" | "r", obs: Observation[], color: string, discoveryMjd?: number) {
   const filtered = obs.filter((o) => o.filter === filterLabel);
   if (filtered.length === 0) return [];
 
@@ -56,8 +62,21 @@ function buildObsSeries(filterLabel: "g" | "r", obs: Observation[], color: strin
       name: `${filterLabel}-band obs`,
       type: "scatter",
       symbolSize: 9,
-      itemStyle: { color, borderColor: "#000", borderWidth: 1.2 },
-      data: filtered.map((o) => [o.mjd, o.mag]),
+      data: filtered.map((o) => {
+        const isAfter = discoveryMjd != null && o.mjd > discoveryMjd;
+        const isUpperLimit = o.is_upperlimit === true;
+        return {
+          value: [o.mjd, o.mag],
+          symbol: isUpperLimit ? "triangle" : "circle",
+          symbolSize: isUpperLimit ? 8 : 9,
+          itemStyle: { 
+            color, 
+            borderColor: "#000", 
+            borderWidth: 1.2, 
+            opacity: isUpperLimit ? 0.4 : (isAfter ? 0.25 : 1) 
+          }
+        };
+      }),
       z: 10,
     },
     // ── Error bars (vertical line + end ticks) ─────────────────────────────
@@ -75,6 +94,11 @@ function buildObsSeries(filterLabel: "g" | "r", obs: Observation[], color: strin
         const bot = api.coord([mjd, mag + magerr]); // dimmer  (higher number)
         const TICK = 4; // half-width of the end-cap tick in pixels
 
+        const isUpperLimit = api.value(4) === 1;
+        
+        // Skip rendering error bars for upper limits
+        if (isUpperLimit) return { type: "group", children: [] };
+
         return {
           type: "group",
           children: [
@@ -82,7 +106,7 @@ function buildObsSeries(filterLabel: "g" | "r", obs: Observation[], color: strin
             {
               type: "line",
               shape: { x1: centre[0], y1: top[1], x2: centre[0], y2: bot[1] },
-              style: { stroke: color, lineWidth: 1.5, opacity: 0.85 },
+              style: { stroke: color, lineWidth: 1.5, opacity: api.value(3) === 1 ? 0.2 : 0.85 },
             },
             // Top tick (bright end)
             {
@@ -93,7 +117,7 @@ function buildObsSeries(filterLabel: "g" | "r", obs: Observation[], color: strin
                 x2: centre[0] + TICK,
                 y2: top[1],
               },
-              style: { stroke: color, lineWidth: 1.5, opacity: 0.85 },
+              style: { stroke: color, lineWidth: 1.5, opacity: api.value(3) === 1 ? 0.2 : 0.85 },
             },
             // Bottom tick (faint end)
             {
@@ -104,13 +128,16 @@ function buildObsSeries(filterLabel: "g" | "r", obs: Observation[], color: strin
                 x2: centre[0] + TICK,
                 y2: bot[1],
               },
-              style: { stroke: color, lineWidth: 1.5, opacity: 0.85 },
+              style: { stroke: color, lineWidth: 1.5, opacity: api.value(3) === 1 ? 0.2 : 0.85 },
             },
           ],
         };
       },
-      // [mjd, mag, magerr] — third value drives the error bar extent
-      data: filtered.map((o) => [o.mjd, o.mag, o.magerr]),
+      // [mjd, mag, magerr, isAfter, isUpperLimit]
+      data: filtered.map((o) => {
+        const isAfter = discoveryMjd != null && o.mjd > discoveryMjd;
+        return [o.mjd, o.mag, o.magerr, isAfter ? 1 : 0, o.is_upperlimit ? 1 : 0];
+      }),
       tooltip: { show: false },
       legendHoverLink: false,
       z: 9,
@@ -181,7 +208,7 @@ function buildBandSeries(label: "g" | "r", bandData: BandData, color: string) {
   ];
 }
 
-export default function LightCurveChart({ data, loading, objectId }: LightCurveChartProps) {
+export default function LightCurveChart({ data, loading, objectId, discoveryDate }: LightCurveChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<echarts.ECharts | null>(null);
 
@@ -260,11 +287,13 @@ export default function LightCurveChart({ data, loading, objectId }: LightCurveC
       : null;
 
     // Populate g-band custom median, envelope, scatter observations, and error ranges
+    const discoveryMjd = discoveryDate ? dateToMJD(discoveryDate) : undefined;
+
     if (gBandSanitized && gBandSanitized.mjd.length > 0) {
       series.push(...buildBandSeries("g", gBandSanitized, COLOR_G));
     }
     if (obs.some((o) => o.filter === "g")) {
-      series.push(...buildObsSeries("g", obs, COLOR_G));
+      series.push(...buildObsSeries("g", obs, COLOR_G, discoveryMjd));
     }
 
     // Populate r-band custom median, envelope, scatter observations, and error ranges
@@ -272,7 +301,7 @@ export default function LightCurveChart({ data, loading, objectId }: LightCurveC
       series.push(...buildBandSeries("r", rBandSanitized, COLOR_R));
     }
     if (obs.some((o) => o.filter === "r")) {
-      series.push(...buildObsSeries("r", obs, COLOR_R));
+      series.push(...buildObsSeries("r", obs, COLOR_R, discoveryMjd));
     }
 
     // Compute exact limits to ensure raw data and models are never cropped
@@ -443,7 +472,7 @@ export default function LightCurveChart({ data, loading, objectId }: LightCurveC
     };
 
     chart.setOption(option, true);
-  }, [data, loading, objectId]);
+  }, [data, loading, objectId, discoveryDate]);
 
   return (
     <div className="relative w-full h-full min-h-[340px] bg-black/60 border border-white/10 rounded-xl p-4 flex flex-col justify-between overflow-hidden">

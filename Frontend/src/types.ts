@@ -2,38 +2,48 @@ export interface BasicInfo {
   discovery_date: string;
   redshift: number;
   plateau_duration_days: number | null;
+  ra?: number;
+  dec?: number;
 }
 
 export interface InferredParameters {
   zams: number; // Zero Age Main Sequence Mass
+  zams_zscore?: number;
   zams_pct_uncertainty?: number;
   zams_pct_plus?: number;
   zams_pct_minus?: number;
   k_energy: number; // Kinetic Energy
+  k_energy_zscore?: number;
   k_energy_pct_uncertainty?: number;
   k_energy_pct_plus?: number;
   k_energy_pct_minus?: number;
   mloss_rate: number; // Mass Loss Rate
+  mloss_rate_zscore?: number;
   mloss_rate_pct_uncertainty?: number;
   mloss_rate_pct_plus?: number;
   mloss_rate_pct_minus?: number;
   beta: number; // Wind velocity profile parameter
+  beta_zscore?: number;
   beta_pct_uncertainty?: number;
   beta_pct_plus?: number;
   beta_pct_minus?: number;
   ni56: number; // Nickel-56 mass fraction
+  ni56_zscore?: number;
   ni56_pct_uncertainty?: number;
   ni56_pct_plus?: number;
   ni56_pct_minus?: number;
   t_exp: number; // Explosion time reference
+  t_exp_zscore?: number;
   t_exp_pct_uncertainty?: number;
   t_exp_pct_plus?: number;
   t_exp_pct_minus?: number;
   A_v: number; // Visual dust extinction
+  A_v_zscore?: number;
   A_v_pct_uncertainty?: number;
   A_v_pct_plus?: number;
   A_v_pct_minus?: number;
   logZ: number; // Log metallicity
+  logZ_zscore?: number;
   logZ_pct_uncertainty?: number;
   logZ_pct_plus?: number;
   logZ_pct_minus?: number;
@@ -106,6 +116,7 @@ export interface Observation {
   mag: number;
   magerr: number;
   filter: "g" | "r";
+  is_upperlimit?: boolean;
 }
 
 export interface BandData {

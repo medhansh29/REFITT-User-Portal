@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { SupernovaSummary, LightCurve } from "../types";
+import { getZScoreColor } from "../utils";
+import AnomalyFootprint from "./AnomalyFootprint";
 
 interface SupernovaCardProps {
   key?: React.Key;
@@ -7,8 +9,10 @@ interface SupernovaCardProps {
   isSelected: boolean;
   onSelect: () => void;
   isCompared: boolean;
+  maxAbsZScore: number;
   onToggleCompare: () => void;
   onShowHistory?: (objectId: string, paramKey: string, paramLabel: string) => void;
+  onShowSkyMap?: (objectId: string) => void;
 }
 
 // Helper: Strips pre-explosion MCMC artifacts (mag > limit) from a model-fit band.
@@ -28,9 +32,15 @@ function sanitizeBand(band: any, limit = 24.0) {
 
 interface MiniPlotProps {
   lightcurve?: LightCurve;
+  discoveryDate?: string;
 }
 
-function MiniPlot({ lightcurve: lc }: MiniPlotProps) {
+function dateToMJD(dateString: string): number {
+  const date = new Date(dateString);
+  return (date.getTime() / 86400000) + 40587;
+}
+
+function MiniPlot({ lightcurve: lc, discoveryDate }: MiniPlotProps) {
   if (!lc) {
     return (
       <div className="text-[10px] font-mono text-slate-600">Plot unavailable</div>
@@ -103,6 +113,8 @@ function MiniPlot({ lightcurve: lc }: MiniPlotProps) {
       .join(" ");
   }
 
+  const discoveryMjd = discoveryDate ? dateToMJD(discoveryDate) : undefined;
+
   return (
     <svg className="w-full h-full pointer-events-none select-none" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
       <g opacity="0.1" stroke="rgba(255,255,255,0.2)" strokeWidth="0.5">
@@ -130,12 +142,28 @@ function MiniPlot({ lightcurve: lc }: MiniPlotProps) {
           opacity="0.8"
         />
       )}
-      {obs_g.map((o, idx) => (
-        <circle key={`g-${idx}`} cx={mapX(o.mjd)} cy={mapY(o.mag)} r="3" fill="#2ecc71" stroke="#000" strokeWidth="1" />
-      ))}
-      {obs_r.map((o, idx) => (
-        <circle key={`r-${idx}`} cx={mapX(o.mjd)} cy={mapY(o.mag)} r="3" fill="#e74c3c" stroke="#000" strokeWidth="1" />
-      ))}
+      {obs_g.map((o, idx) => {
+        const isAfter = discoveryMjd != null && o.mjd > discoveryMjd;
+        const cx = mapX(o.mjd);
+        const cy = mapY(o.mag);
+        const isLimit = o.is_upperlimit === true;
+        const op = isLimit ? 0.4 : (isAfter ? 0.25 : 1);
+        if (isLimit) {
+          return <polygon key={`g-${idx}`} points={`${cx-3},${cy-2.5} ${cx+3},${cy-2.5} ${cx},${cy+3.5}`} fill="#2ecc71" stroke="#000" strokeWidth="1" opacity={op} />;
+        }
+        return <circle key={`g-${idx}`} cx={cx} cy={cy} r="3" fill="#2ecc71" stroke="#000" strokeWidth="1" opacity={op} />;
+      })}
+      {obs_r.map((o, idx) => {
+        const isAfter = discoveryMjd != null && o.mjd > discoveryMjd;
+        const cx = mapX(o.mjd);
+        const cy = mapY(o.mag);
+        const isLimit = o.is_upperlimit === true;
+        const op = isLimit ? 0.4 : (isAfter ? 0.25 : 1);
+        if (isLimit) {
+          return <polygon key={`r-${idx}`} points={`${cx-3},${cy-2.5} ${cx+3},${cy-2.5} ${cx},${cy+3.5}`} fill="#e74c3c" stroke="#000" strokeWidth="1" opacity={op} />;
+        }
+        return <circle key={`r-${idx}`} cx={cx} cy={cy} r="3" fill="#e74c3c" stroke="#000" strokeWidth="1" opacity={op} />;
+      })}
     </svg>
   );
 }
@@ -145,8 +173,10 @@ export default function SupernovaCard({
   isSelected,
   onSelect,
   isCompared,
+  maxAbsZScore,
   onToggleCompare,
   onShowHistory,
+  onShowSkyMap,
 }: SupernovaCardProps) {
   const { object_id, basic_info, anomalies, has_light_curve, inferred_parameters, lightcurve } = item;
 
@@ -223,13 +253,13 @@ export default function SupernovaCard({
     label: string,
     key: string,
     val: number | undefined | null,
+    zscore: number | undefined | null,
     pct_plus: number | undefined | null,
     pct_minus: number | undefined | null,
     digits: number,
     unit: string
   ) => {
-    const hasHistory = item.parameter_history && item.parameter_history.length > 0;
-    const isInteractive = !!(hasHistory && ["zams", "k_energy", "mloss_rate", "beta", "ni56", "t_exp", "A_v", "logZ"].includes(key));
+    const isInteractive = ["zams", "k_energy", "mloss_rate", "beta", "ni56", "t_exp", "A_v", "logZ"].includes(key);
 
     const handleClick = (e: React.MouseEvent) => {
       if (isInteractive && onShowHistory) {
@@ -245,15 +275,15 @@ export default function SupernovaCard({
         title={isInteractive ? "Click to view convergence history" : undefined}
       >
         <span className="block text-[9.5px] text-slate-500 uppercase tracking-widest mb-0.5 truncate">{label}</span>
-        <span className="text-slate-200 font-medium flex items-center gap-1 min-w-0">
+        <span className="font-medium flex items-center gap-1 min-w-0" style={{ color: getZScoreColor(zscore, maxAbsZScore) || "#e2e8f0" }}>
           {val !== undefined && val !== null ? (
             <>
               <span className="truncate">{val.toFixed(digits)}</span>
               {unit && <span className="text-[9px] text-slate-500 font-normal">{unit}</span>}
               {pct_plus !== undefined && pct_plus !== null && pct_minus !== undefined && pct_minus !== null && (
                 <span className="flex flex-col text-[7px] font-mono leading-none select-none ml-1 shrink-0">
-                  <span className="text-emerald-400">+{pct_plus.toFixed(1)}%</span>
-                  <span className="text-rose-400">-{pct_minus.toFixed(1)}%</span>
+                  <span className="text-white">+{pct_plus.toFixed(1)}%</span>
+                  <span className="text-white">-{pct_minus.toFixed(1)}%</span>
                 </span>
               )}
             </>
@@ -290,6 +320,19 @@ export default function SupernovaCard({
           }`}>
             {object_id}
           </span>
+          {/* Sky Map button */}
+          {item.basic_info.ra != null && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onShowSkyMap?.(object_id);
+              }}
+              className="ml-1.5 p-1 rounded-md bg-white/5 hover:bg-amber-500/15 border border-white/10 hover:border-amber-500/30 text-slate-400 hover:text-amber-400 transition-all cursor-pointer"
+              title="View sky location"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+            </button>
+          )}
         </div>
 
         {/* Display active tags */}
@@ -312,12 +355,17 @@ export default function SupernovaCard({
         )}
       </div>
 
-      {/* Mini Plot Thumbnail (Top, Full Width) */}
-      {has_light_curve && (
-        <div className="w-full h-[180px] bg-black/50 border border-white/5 hover:border-white/10 rounded-lg overflow-hidden shrink-0 flex items-center justify-center relative transition-all duration-200">
-          <MiniPlot lightcurve={item.lightcurve} />
+      {/* Mini Plot Thumbnail and Anomaly Footprint */}
+      <div className="flex gap-2 h-[180px] w-full shrink-0">
+        {has_light_curve && (
+          <div className="flex-1 bg-black/50 border border-white/5 hover:border-white/10 rounded-lg overflow-hidden flex items-center justify-center relative transition-all duration-200">
+            <MiniPlot lightcurve={item.lightcurve} discoveryDate={item.basic_info.discovery_date} />
+          </div>
+        )}
+        <div className="w-1/3 min-w-[140px] bg-black/40 border border-white/5 hover:border-white/10 rounded-lg overflow-hidden relative transition-all duration-200">
+          <AnomalyFootprint parameters={item.inferred_parameters} />
         </div>
-      )}
+      </div>
 
       {/* Properties & Parameters Grid (Bottom) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-y-3 gap-x-2 text-[11px] font-mono text-[#9ca3af]">
@@ -347,14 +395,14 @@ export default function SupernovaCard({
             {lightcurve?.observations ? lightcurve.observations.length : 0}
           </span>
         </div>
-        {renderParam("E_k (foe)", "k_energy", inferred_parameters?.k_energy, inferred_parameters?.k_energy_pct_plus, inferred_parameters?.k_energy_pct_minus, 2, "")}
-        {renderParam("M_Ni (M☉)", "ni56", inferred_parameters?.ni56, inferred_parameters?.ni56_pct_plus, inferred_parameters?.ni56_pct_minus, 3, "")}
-        {renderParam("Prog Mass (M☉)", "zams", inferred_parameters?.zams, inferred_parameters?.zams_pct_plus, inferred_parameters?.zams_pct_minus, 1, "")}
-        {renderParam("M_loss (idx)", "mloss_rate", inferred_parameters?.mloss_rate, inferred_parameters?.mloss_rate_pct_plus, inferred_parameters?.mloss_rate_pct_minus, 2, "")}
-        {renderParam("Beta", "beta", inferred_parameters?.beta, inferred_parameters?.beta_pct_plus, inferred_parameters?.beta_pct_minus, 2, "")}
-        {renderParam("t_exp (days)", "t_exp", inferred_parameters?.t_exp, inferred_parameters?.t_exp_pct_plus, inferred_parameters?.t_exp_pct_minus, 2, "")}
-        {renderParam("A_v (mag)", "A_v", inferred_parameters?.A_v, inferred_parameters?.A_v_pct_plus, inferred_parameters?.A_v_pct_minus, 2, "")}
-        {renderParam("logZ (dex)", "logZ", inferred_parameters?.logZ, inferred_parameters?.logZ_pct_plus, inferred_parameters?.logZ_pct_minus, 2, "")}
+        {renderParam("E_k (foe)", "k_energy", inferred_parameters?.k_energy, inferred_parameters?.k_energy_zscore, inferred_parameters?.k_energy_pct_plus, inferred_parameters?.k_energy_pct_minus, 2, "")}
+        {renderParam("M_Ni (M☉)", "ni56", inferred_parameters?.ni56, inferred_parameters?.ni56_zscore, inferred_parameters?.ni56_pct_plus, inferred_parameters?.ni56_pct_minus, 3, "")}
+        {renderParam("Prog Mass (M☉)", "zams", inferred_parameters?.zams, inferred_parameters?.zams_zscore, inferred_parameters?.zams_pct_plus, inferred_parameters?.zams_pct_minus, 1, "")}
+        {renderParam("M_loss (idx)", "mloss_rate", inferred_parameters?.mloss_rate, inferred_parameters?.mloss_rate_zscore, inferred_parameters?.mloss_rate_pct_plus, inferred_parameters?.mloss_rate_pct_minus, 2, "")}
+        {renderParam("Beta", "beta", inferred_parameters?.beta, inferred_parameters?.beta_zscore, inferred_parameters?.beta_pct_plus, inferred_parameters?.beta_pct_minus, 2, "")}
+        {renderParam("t_exp (days)", "t_exp", inferred_parameters?.t_exp, inferred_parameters?.t_exp_zscore, inferred_parameters?.t_exp_pct_plus, inferred_parameters?.t_exp_pct_minus, 2, "")}
+        {renderParam("A_v (mag)", "A_v", inferred_parameters?.A_v, inferred_parameters?.A_v_zscore, inferred_parameters?.A_v_pct_plus, inferred_parameters?.A_v_pct_minus, 2, "")}
+        {renderParam("logZ (dex)", "logZ", inferred_parameters?.logZ, inferred_parameters?.logZ_zscore, inferred_parameters?.logZ_pct_plus, inferred_parameters?.logZ_pct_minus, 2, "")}
         <div>
           <span className="block text-[9.5px] text-slate-500 uppercase tracking-widest mb-0.5">red_chi2</span>
           <span className="text-slate-200 font-medium">
